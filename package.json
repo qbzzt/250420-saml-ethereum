@@ -1,0 +1,28 @@
+{
+  "name": "EthereumSAML",
+  "version": "1.0.0",
+  "main": "./lib/index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@authenio/samlify-node-xmllint": "^2.0.0",
+    "@authenio/samlify-xsd-schema-validator": "^1.0.5",
+    "body-parser": "^2.2.0",
+    "express": "^4.21.2",
+    "fast-xml-parser": "^5.0.9",
+    "samlify": "^2.9.1",
+    "tslint": "^6.1.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "xml-crypto": "^6.0.1"
+  },
+  "files": [
+    "./bin/*",
+    "./lib/*"
+  ],
+  "typings": "./lib/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "tslint -c tslint.json src/**/*.ts",
+    "prepublish": "npm run build"
+  }
+}
