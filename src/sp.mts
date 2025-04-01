@@ -1,7 +1,7 @@
 import * as config from "./config.mts"
 const fs = await import("fs")
 const saml = await import("samlify")
-import * as validator from '@authenio/samlify-node-xmllint'
+import * as validator from "@authenio/samlify-node-xmllint"
 saml.setSchemaValidator(validator)
 const express = (await import("express")).default
 const spRouter = express.Router()
