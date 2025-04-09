@@ -11,6 +11,11 @@ const xmlParser = new (await import("fast-xml-parser")).XMLParser(
     attributeNamePrefix: "@_", // Prefix for attributes
   }
 )
+import { v4 as uuidv4 } from 'uuid'
+import { verifyMessage } from 'viem'
+
+
+const loginPrompt = "To access the service provider, sign this nonce: "
 
 const idpPrivateKey = fs.readFileSync("keys/saml-idp.pem").toString()
 
@@ -21,28 +26,64 @@ const idp = saml.IdentityProvider({
 
 const sp = saml.ServiceProvider(config.spPublicData)
 
-const getLoginPage = requestId => `
+// Keep requestIDs here
+let nonces = {}
+
+const getSignaturePage = requestId => {
+  const nonce = uuidv4()
+  nonces[nonce] = requestId
+
+  return `
 <html>
   <head>
-    <title>Login page</title>
+    <script type="module">
+      import { createWalletClient, custom } from 'https://esm.sh/viem'
+      if (!window.ethereum) {
+          alert("Please install MetaMask or a compatible wallet and then reload")
+      }
+      const [account] = await window.ethereum.request({method: 'eth_requestAccounts'})
+      const walletClient = createWalletClient({
+          account,
+          transport: custom(window.ethereum)
+      })
+      walletClient.signMessage({
+          message: "${loginPrompt}${nonce}"
+      }).then(signature => {
+          const path= "signature/${nonce}/" + account + "/" + signature
+          window.location.href = path
+      })
+    </script>
   </head>
   <body>
-    <h2>Login page</h2>
-    <form method="post" action="./loginSubmitted">
-      <input type="hidden" name="requestId" value="${requestId}" />
-      Email address: <input name="email" />
-      <br />
-      <button type="Submit">
-        Login to the service provider
-      </button>
-    </form>
+    <h2>Waiting for signature</h2>
   </body>
-</html>
+</html>  
 `
+}
+
 
 const idpRouter = express.Router()
 
-idpRouter.post("/loginSubmitted", async (req, res) => {
+idpRouter.get("/signature/:nonce/:account/:signature", async (req, res) => {
+  const requestId = nonces[req.params.nonce]
+  if (requestId === undefined) {
+    res.send("Bad nonce")
+    return ;
+  }
+
+  nonces[req.params.nonce] = undefined
+
+  const validSignature = await verifyMessage({
+    address: req.params.account,
+    message: `${loginPrompt}${req.params.nonce}`,
+    signature: req.params.signature
+  })
+
+  if (!validSignature) {
+    res.send("Bad signature")
+    return ;
+  }
+
   const loginResponse = await idp.createLoginResponse(
     sp, 
     {
@@ -50,19 +91,16 @@ idpRouter.post("/loginSubmitted", async (req, res) => {
       audience: sp.entityID,
       extract: {
         request: {
-          id: req.body.requestId
+          id: requestId
         }
       },
       signingKey: { privateKey: idpPrivateKey, publicKey: config.idpCert }  // Ensure signing
     },
     "post",
     {
-      email: req.body.email
+      email: req.params.account + "@bad.email.address"
     }
   );
-
-  // const samlResponseDecoded = Buffer.from(loginResponse.context, "base64").toString("utf8");
-  // console.log("Decoded SAML Response:", samlResponseDecoded);
 
   res.send(`
     <html>
@@ -77,7 +115,6 @@ idpRouter.post("/loginSubmitted", async (req, res) => {
       </body>
     </html>
   `)
-
 })
 
 // IdP endpoint for login requests
@@ -87,7 +124,7 @@ idpRouter.post(`/login`,
       // Workaround because I couldn't get parseLoginRequest to work.
       // const loginRequest = await idp.parseLoginRequest(sp, 'post', req)
       const samlRequest = xmlParser.parse(Buffer.from(req.body.SAMLRequest, 'base64').toString('utf-8'))
-      res.send(getLoginPage(samlRequest["samlp:AuthnRequest"]["@_ID"]))
+      res.send(getSignaturePage(samlRequest["samlp:AuthnRequest"]["@_ID"]))
     } catch (err) {
       console.error('Error processing SAML response:', err);
       res.status(400).send('SAML authentication failed');
@@ -98,6 +135,7 @@ idpRouter.post(`/login`,
 idpRouter.get(`/metadata`, 
   (req, res) => res.header("Content-Type", "text/xml").send(idp.getMetadata())
 )
+
 
 app.use(express.urlencoded({extended: true}))
 app.use(`/${config.idpDir}`, idpRouter)

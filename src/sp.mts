@@ -44,6 +44,7 @@ spRouter.post(`/assertion`,
 spRouter.get('/login',
   async (req, res) => {
     const loginRequest = await sp.createLoginRequest(idp, "post")
+    // console.log(loginRequest)
     res.send(`
       <html>
         <body>
