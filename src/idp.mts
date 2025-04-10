@@ -37,7 +37,7 @@ const getSignaturePage = requestId => {
 <html>
   <head>
     <script type="module">
-      import { createWalletClient, custom } from 'https://esm.sh/viem'
+      import { createWalletClient, custom, getAddress } from 'https://esm.sh/viem'
       if (!window.ethereum) {
           alert("Please install MetaMask or a compatible wallet and then reload")
       }
@@ -46,16 +46,34 @@ const getSignaturePage = requestId => {
           account,
           transport: custom(window.ethereum)
       })
-      walletClient.signMessage({
-          message: "${loginPrompt}${nonce}"
-      }).then(signature => {
-          const path= "signature/${nonce}/" + account + "/" + signature
-          window.location.href = path
-      })
+      
+      window.goodSignature = () => {
+        walletClient.signMessage({
+            message: "${loginPrompt}${nonce}"
+        }).then(signature => {
+            const path= "/${config.idpDir}/signature/${nonce}/" + account + "/" + signature
+            // window.location.href = path
+            console.log(signature)
+        })
+      }
+
+      window.badSignature = () => {
+        const path= "/${config.idpDir}/signature/${nonce}/" + 
+          getAddress("0x" + "BAD060A7".padEnd(40, "0")) + 
+          "/0x" + "BAD0516".padStart(130, "0")
+        window.location.href = path
+      }
     </script>
   </head>
   <body>
-    <h2>Waiting for signature</h2>
+    <h2>Please sign</h2>
+    <button onClick="window.goodSignature()">
+      Submit a good (valid) signature
+    </button>
+    <br/>
+    <button onClick="window.badSignature()">
+      Submit a bad (invalid) signature
+    </button>
   </body>
 </html>  
 `
@@ -65,6 +83,7 @@ const getSignaturePage = requestId => {
 const idpRouter = express.Router()
 
 idpRouter.get("/signature/:nonce/:account/:signature", async (req, res) => {
+
   const requestId = nonces[req.params.nonce]
   if (requestId === undefined) {
     res.send("Bad nonce")
@@ -73,17 +92,18 @@ idpRouter.get("/signature/:nonce/:account/:signature", async (req, res) => {
 
   nonces[req.params.nonce] = undefined
 
-  const validSignature = await verifyMessage({
-    address: req.params.account,
-    message: `${loginPrompt}${req.params.nonce}`,
-    signature: req.params.signature
-  })
-
-  if (!validSignature) {
-    res.send("Bad signature")
+  try {
+    const validSignature = await verifyMessage({
+      address: req.params.account,
+      message: `${loginPrompt}${req.params.nonce}`,
+      signature: req.params.signature
+    })
+    if (!validSignature)
+      throw("Bad signature")
+  } catch (err) {
+    res.send("Error:" + err)
     return ;
   }
-
   const loginResponse = await idp.createLoginResponse(
     sp, 
     {
