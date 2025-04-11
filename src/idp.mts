@@ -52,8 +52,7 @@ const getSignaturePage = requestId => {
             message: "${loginPrompt}${nonce}"
         }).then(signature => {
             const path= "/${config.idpDir}/signature/${nonce}/" + account + "/" + signature
-            // window.location.href = path
-            console.log(signature)
+            window.location.href = path
         })
       }
 
