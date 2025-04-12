@@ -12,8 +12,38 @@ const xmlParser = new (await import("fast-xml-parser")).XMLParser(
   }
 )
 import { v4 as uuidv4 } from 'uuid'
-import { verifyMessage } from 'viem'
+import { verifyMessage, getAddress } from 'viem'
+import { GraphQLClient } from 'graphql-request'
+import { SchemaEncoder } from '@ethereum-attestation-service/eas-sdk'
 
+const graphqlEndpointUrl = "https://optimism.easscan.org/graphql"
+const graphqlClient = new GraphQLClient(graphqlEndpointUrl, { fetch })
+
+const graphqlSchema = 'string emailAddress'
+const graphqlEncoder = new SchemaEncoder(graphqlSchema)
+
+const ethereumAddressToEmail = async ethAddr => {
+  const query = `
+    query GetAttestationsByRecipient {
+      attestations(
+        where: { 
+          recipient: { equals: "${getAddress(ethAddr)}" }
+          schemaId: { equals: "0xfa2eff59a916e3cc3246f9aec5e0ca00874ae9d09e4678e5016006f07622f977" }
+        }
+        take: 10
+      ) { 
+        data
+      }
+    }`
+
+  const queryResult = await graphqlClient.request(query)
+
+  if (queryResult.attestations.length == 0)
+    return "no_address@available.is"
+
+  const attestationDataFields = graphqlEncoder.decodeData(queryResult.attestations[0].data)
+  return attestationDataFields[0].value.value
+}
 
 const loginPrompt = "To access the service provider, sign this nonce: "
 
@@ -117,7 +147,7 @@ idpRouter.get("/signature/:nonce/:account/:signature", async (req, res) => {
     },
     "post",
     {
-      email: req.params.account + "@bad.email.address"
+      email: await ethereumAddressToEmail(req.params.account)
     }
   );
 
