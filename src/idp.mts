@@ -30,13 +30,17 @@ const ethereumAddressToEmail = async ethAddr => {
           recipient: { equals: "${getAddress(ethAddr)}" }
           schemaId: { equals: "0xfa2eff59a916e3cc3246f9aec5e0ca00874ae9d09e4678e5016006f07622f977" }
         }
-        take: 10
+        take: 1
       ) { 
         data
+        id
+        attester
       }
     }`
 
   const queryResult = await graphqlClient.request(query)
+
+  console.log(queryResult)
 
   if (queryResult.attestations.length == 0)
     return "no_address@available.is"
