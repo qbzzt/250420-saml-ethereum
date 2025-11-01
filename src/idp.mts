@@ -1,7 +1,7 @@
 import * as config from "./config.mts"
 const fs = await import("fs")
 const saml = await import("samlify")
-import * as validator from "@authenio/samlify-xsd-schema-validator"
+import * as validator from "@authenio/samlify-node-xmllint"
 saml.setSchemaValidator(validator)
 const express = (await import("express")).default
 const app = express()
@@ -11,6 +11,45 @@ const xmlParser = new (await import("fast-xml-parser")).XMLParser(
     attributeNamePrefix: "@_", // Prefix for attributes
   }
 )
+import { v4 as uuidv4 } from 'uuid'
+import { verifyMessage, getAddress } from 'viem'
+import { GraphQLClient } from 'graphql-request'
+import { SchemaEncoder } from '@ethereum-attestation-service/eas-sdk'
+
+const graphqlEndpointUrl = "https://optimism.easscan.org/graphql"
+const graphqlClient = new GraphQLClient(graphqlEndpointUrl, { fetch })
+
+const graphqlSchema = 'string emailAddress'
+const graphqlEncoder = new SchemaEncoder(graphqlSchema)
+
+const ethereumAddressToEmail = async ethAddr => {
+  const query = `
+    query GetAttestationsByRecipient {
+      attestations(
+        where: { 
+          recipient: { equals: "${getAddress(ethAddr)}" }
+          schemaId: { equals: "0xfa2eff59a916e3cc3246f9aec5e0ca00874ae9d09e4678e5016006f07622f977" }
+        }
+        take: 1
+      ) { 
+        data
+        id
+        attester
+      }
+    }`
+
+  const queryResult = await graphqlClient.request(query)
+
+  console.log(queryResult)
+
+  if (queryResult.attestations.length == 0)
+    return "no_address@available.is"
+
+  const attestationDataFields = graphqlEncoder.decodeData(queryResult.attestations[0].data)
+  return attestationDataFields[0].value.value
+}
+
+const loginPrompt = "To access the service provider, sign this nonce: "
 
 const idpPrivateKey = fs.readFileSync("keys/saml-idp.pem").toString()
 
@@ -21,28 +60,83 @@ const idp = saml.IdentityProvider({
 
 const sp = saml.ServiceProvider(config.spPublicData)
 
-const getLoginPage = requestId => `
+// Keep requestIDs here
+let nonces = {}
+
+const getSignaturePage = requestId => {
+  const nonce = uuidv4()
+  nonces[nonce] = requestId
+
+  return `
 <html>
   <head>
-    <title>Login page</title>
+    <script type="module">
+      import { createWalletClient, custom, getAddress } from 'https://esm.sh/viem'
+      if (!window.ethereum) {
+          alert("Please install MetaMask or a compatible wallet and then reload")
+      }
+      const [account] = await window.ethereum.request({method: 'eth_requestAccounts'})
+      const walletClient = createWalletClient({
+          account,
+          transport: custom(window.ethereum)
+      })
+      
+      window.goodSignature = () => {
+        walletClient.signMessage({
+            message: "${loginPrompt}${nonce}"
+        }).then(signature => {
+            const path= "/${config.idpDir}/signature/${nonce}/" + account + "/" + signature
+            window.location.href = path
+        })
+      }
+
+      window.badSignature = () => {
+        const path= "/${config.idpDir}/signature/${nonce}/" + 
+          getAddress("0x" + "BAD060A7".padEnd(40, "0")) + 
+          "/0x" + "BAD0516".padStart(130, "0")
+        window.location.href = path
+      }
+    </script>
   </head>
   <body>
-    <h2>Login page</h2>
-    <form method="post" action="./loginSubmitted">
-      <input type="hidden" name="requestId" value="${requestId}" />
-      Email address: <input name="email" />
-      <br />
-      <button type="Submit">
-        Login to the service provider
-      </button>
-    </form>
+    <h2>Please sign</h2>
+    <button onClick="window.goodSignature()">
+      Submit a good (valid) signature
+    </button>
+    <br/>
+    <button onClick="window.badSignature()">
+      Submit a bad (invalid) signature
+    </button>
   </body>
-</html>
+</html>  
 `
+}
+
 
 const idpRouter = express.Router()
 
-idpRouter.post("/loginSubmitted", async (req, res) => {
+idpRouter.get("/signature/:nonce/:account/:signature", async (req, res) => {
+
+  const requestId = nonces[req.params.nonce]
+  if (requestId === undefined) {
+    res.send("Bad nonce")
+    return ;
+  }
+
+  nonces[req.params.nonce] = undefined
+
+  try {
+    const validSignature = await verifyMessage({
+      address: req.params.account,
+      message: `${loginPrompt}${req.params.nonce}`,
+      signature: req.params.signature
+    })
+    if (!validSignature)
+      throw("Bad signature")
+  } catch (err) {
+    res.send("Error:" + err)
+    return ;
+  }
   const loginResponse = await idp.createLoginResponse(
     sp, 
     {
@@ -50,19 +144,16 @@ idpRouter.post("/loginSubmitted", async (req, res) => {
       audience: sp.entityID,
       extract: {
         request: {
-          id: req.body.requestId
+          id: requestId
         }
       },
       signingKey: { privateKey: idpPrivateKey, publicKey: config.idpCert }  // Ensure signing
     },
     "post",
     {
-      email: req.body.email
+      email: await ethereumAddressToEmail(req.params.account)
     }
   );
-
-  // const samlResponseDecoded = Buffer.from(loginResponse.context, "base64").toString("utf8");
-  // console.log("Decoded SAML Response:", samlResponseDecoded);
 
   res.send(`
     <html>
@@ -77,7 +168,6 @@ idpRouter.post("/loginSubmitted", async (req, res) => {
       </body>
     </html>
   `)
-
 })
 
 // IdP endpoint for login requests
@@ -87,7 +177,7 @@ idpRouter.post(`/login`,
       // Workaround because I couldn't get parseLoginRequest to work.
       // const loginRequest = await idp.parseLoginRequest(sp, 'post', req)
       const samlRequest = xmlParser.parse(Buffer.from(req.body.SAMLRequest, 'base64').toString('utf-8'))
-      res.send(getLoginPage(samlRequest["samlp:AuthnRequest"]["@_ID"]))
+      res.send(getSignaturePage(samlRequest["samlp:AuthnRequest"]["@_ID"]))
     } catch (err) {
       console.error('Error processing SAML response:', err);
       res.status(400).send('SAML authentication failed');
@@ -98,6 +188,7 @@ idpRouter.post(`/login`,
 idpRouter.get(`/metadata`, 
   (req, res) => res.header("Content-Type", "text/xml").send(idp.getMetadata())
 )
+
 
 app.use(express.urlencoded({extended: true}))
 app.use(`/${config.idpDir}`, idpRouter)
